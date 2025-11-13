@@ -1,7 +1,8 @@
 import socket
 import time
 
-server_ip = "192.168.0.103"   # put your server laptop IP here
+server_ip = "192.168.0.8"
+
 port = 9999
 
 client_name = input("Enter client name: ")
