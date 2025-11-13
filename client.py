@@ -1,7 +1,7 @@
 import socket
 import time
 
-server_ip = "192.168.0.8"
+server_ip = "192.168.56.1"
 
 port = 9999
 
