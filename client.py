@@ -2,116 +2,48 @@ import socket
 import time
 import uuid
 
-mac = hex(uuid.getnode())[2:]
-port = 6767
-bcast = ("255.255.255.255", port)
-
-def send_discover(sock):
-    sock.sendto(f"DISCOVER {mac}".encode(), bcast)
-
-def wait_offer(sock, timeout=5):
-    sock.settimeout(timeout)
-    try:
-        data, addr = sock.recvfrom(1024)
-        return data.decode().strip(), addr
-    except:
-        return None, None
-
-def send_request(ip, server_addr):
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.sendto(f"REQUEST {mac} {ip}".encode(), server_addr)
-    s.settimeout(5)
-    try:
-        d,_ = s.recvfrom(1024)
-        return d.decode().strip()
-    except:
-        return None
-
-def send_renew(server_addr):
-    r = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    r.sendto(f"RENEW {mac}".encode(), server_addr)
-    r.settimeout(5)
-    try:
-        d,_ = r.recvfrom(1024)
-        return d.decode().strip()
-    except:
-        return None
-
-def send_release(server_addr):
-    r = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    r.sendto(f"RELEASE {mac}".encode(), server_addr)
-    r.settimeout(3)
-    try:
-        d,_ = r.recvfrom(1024)
-        return d.decode().strip()
-    except:
-        return None
+server_port = 9999
+lease_time = 0
+assigned_ip = None
+mac = str(uuid.uuid4())[:12]
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+sock.settimeout(3)
 
-send_discover(sock)
-msg, server_addr = wait_offer(sock, timeout=5)
-if not msg:
-    print("No OFFER received")
-    sock.close()
-    exit()
+broadcast_addr = ("255.255.255.255", server_port)
 
-parts = msg.split()
-if not (parts[0] == "OFFER" and parts[1] == mac):
-    print("Unexpected OFFER:", msg)
-    sock.close()
-    exit()
+sock.sendto(f"DISCOVER {mac}".encode(), broadcast_addr)
+data, server = sock.recvfrom(1024)
+_, offer_ip = data.decode().split()
+print(f"[OFFER] {offer_ip}")
 
-offered_ip = parts[2]
-print("[DISCOVER] OFFER received:", offered_ip, "from", server_addr)
+sock.sendto(f"REQUEST {mac} {offer_ip}".encode(), server)
+data, server = sock.recvfrom(1024)
+_, assigned_ip, lease_time = data.decode().split()
+lease_time = int(lease_time)
+print(f"[ACK] {assigned_ip} lease={lease_time}")
 
-ack = send_request(offered_ip, server_addr)
-if not ack or not ack.startswith("ACK"):
-    print("REQUEST failed or NACK")
-    sock.close()
-    exit()
+MAX_RENEWS = 2
+renew_count = 0
 
-print("[REQUEST] ACK received. Lease granted for", offered_ip)
-
-lease_time = 30
-lease_end = time.time() + lease_time
-t1 = lease_end - lease_time / 2
+start = time.time()
 
 while True:
-    now = time.time()
-    if now >= lease_end:
-        print("Lease expired, restarting discovery")
-        send_discover(sock)
-        msg, server_addr = wait_offer(sock, timeout=5)
-        if not msg:
-            break
-        parts = msg.split()
-        if parts[0] != "OFFER":
-            break
-        offered_ip = parts[2]
-        ack = send_request(offered_ip, server_addr)
-        if not ack or not ack.startswith("ACK"):
-            break
-        lease_end = time.time() + lease_time
-        t1 = lease_end - lease_time / 2
-        continue
+    time.sleep(lease_time // 2)
 
-    if now >= t1:
-        r = send_renew(server_addr)
-        if r and r.startswith("ACK_RENEW"):
-            lease_end = time.time() + lease_time
-            t1 = lease_end - lease_time / 2
-            print("[RENEW] success")
-        else:
-            print("[RENEW] failed, will try full discover on expiry")
-            t1 = lease_end + 1
+    if renew_count >= MAX_RENEWS:
+        print("Renew limit reached. Allowing lease to expire.")
+        break
 
+    sock.sendto(f"RENEW {mac}".encode(), server)
+    data, server = sock.recvfrom(1024)
+    _, assigned_ip, lease_time = data.decode().split()
+    lease_time = int(lease_time)
+    renew_count += 1
+    print(f"[RENEW] {assigned_ip} ({renew_count}/{MAX_RENEWS})")
+
+print("Client stopping renewals. Waiting for server to expire lease.")
+
+while True:
     time.sleep(1)
-    if time.time() - lease_end > 1:
-        continue
-
-print("Releasing if possible")
-res = send_release(server_addr)
-print("Release response:", res)
-sock.close()
