@@ -3,92 +3,99 @@ import time
 import threading
 import random
 
-ip_pool=[
-    "192.168.1.10","192.168.1.11","192.168.1.12","192.168.1.13","192.168.1.14",
-    "192.168.1.15","192.168.1.16","192.168.1.17","192.168.1.18","192.168.1.19",
-    "192.168.1.20"
+ip_pool = [
+    "192.168.1.10","192.168.1.11","192.168.1.12",
+    "192.168.1.13","192.168.1.14","192.168.1.15",
+    "192.168.1.16","192.168.1.17","192.168.1.18",
+    "192.168.1.19","192.168.1.20"
 ]
 
-assigned={}
-past_leases={}
-lease_duration=10
+assigned = {}       # mac -> (ip, expiry)
+past_leases = {}    # mac -> last_ip
+lease_time = 30
+port = 6767
 
-server_ip="0.0.0.0"
-port=1010
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+s.bind(("", port))
 
-def lease_cleaner():
+def cleaner():
     while True:
-        now=time.time()
-        expired=[cid for cid,(ip,end) in assigned.items() if now>end]
-        for cid in expired:
-            ip,_=assigned.pop(cid)
+        now = time.time()
+        expired = [m for m,(ip,e) in assigned.items() if e <= now]
+        for m in expired:
+            ip,_ = assigned.pop(m)
             ip_pool.append(ip)
-            print(f"[LEASE EXPIRED] {cid} → {ip} returned to pool")
+            print(f"[LEASE EXPIRED] {m} -> {ip}")
         time.sleep(1)
 
-threading.Thread(target=lease_cleaner,daemon=True).start()
+threading.Thread(target=cleaner, daemon=True).start()
 
-s=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-s.bind((server_ip,port))
-s.listen(5)
-
-print("\nDHCP SERVER RUNNING:")
-print(f"Lease time: {lease_duration} seconds\n")
-
-def select_ip_for(client_id):
-    if client_id in past_leases:
-        old=past_leases[client_id]
+def select_ip(mac):
+    if mac in past_leases:
+        old = past_leases[mac]
         if old in ip_pool:
             return old
     if ip_pool:
         return random.choice(ip_pool)
     return None
 
+print("SERVER RUNNING ON UDP PORT", port)
+
 while True:
-    conn,addr=s.accept()
-    data=conn.recv(1024).decode().strip()
-    if not data:
-        conn.close()
+    try:
+        data, addr = s.recvfrom(1024)
+        msg = data.decode().strip()
+    except:
         continue
 
-    client_id=addr[0]
-    print(f"Client {addr} → {data}")
+    parts = msg.split()
+    if not parts:
+        continue
 
-    if data=="DISCOVER":
-        offer_ip=select_ip_for(client_id)
-        if offer_ip:
-            conn.send(f"OFFER {offer_ip}".encode())
-            print(f"[OFFER] {client_id} ← {offer_ip}")
+    if parts[0] == "DISCOVER" and len(parts) == 2:
+        mac = parts[1]
+        ip = select_ip(mac)
+        if ip:
+            s.sendto(f"OFFER {mac} {ip}".encode(), addr)
+            print(f"[OFFER] {mac} -> {ip} to {addr}")
         else:
-            conn.send("NO_IP_AVAILABLE".encode())
+            s.sendto("NO_IP".encode(), addr)
+            print("[OFFER] none available")
 
-    elif data.startswith("REQUEST"):
-        _,req_ip=data.split()
-        if req_ip not in ip_pool:
-            conn.send("NACK".encode())
-            print(f"[NACK] {client_id} requested invalid IP {req_ip}")
+    elif parts[0] == "REQUEST" and len(parts) == 3:
+        mac = parts[1]
+        req_ip = parts[2]
+        already_assigned = (mac in assigned and assigned[mac][0] == req_ip)
+        if req_ip in ip_pool or already_assigned:
+            assigned[mac] = (req_ip, time.time() + lease_time)
+            past_leases[mac] = req_ip
+            if req_ip in ip_pool:
+                ip_pool.remove(req_ip)
+            s.sendto(f"ACK {mac} {req_ip}".encode(), addr)
+            print(f"[ACK] {mac} -> {req_ip}")
         else:
-            assigned[client_id]=(req_ip,time.time()+lease_duration)
-            past_leases[client_id]=req_ip
-            ip_pool.remove(req_ip)
-            conn.send(f"ACK {req_ip}".encode())
-            print(f"[ACK] {client_id} assigned {req_ip}")
+            s.sendto("NACK".encode(), addr)
+            print(f"[NACK] {mac} requested {req_ip}")
 
-    elif data=="RELEASE":
-        if client_id in assigned:
-            ip,_=assigned.pop(client_id)
+    elif parts[0] == "RENEW" and len(parts) == 2:
+        mac = parts[1]
+        if mac in assigned:
+            ip, _ = assigned[mac]
+            assigned[mac] = (ip, time.time() + lease_time)
+            s.sendto(f"ACK_RENEW {mac} {ip}".encode(), addr)
+            print(f"[RENEW-ACK] {mac} -> {ip}")
+        else:
+            s.sendto("NACK".encode(), addr)
+            print(f"[RENEW-NACK] {mac} not found")
+
+    elif parts[0] == "RELEASE" and len(parts) == 2:
+        mac = parts[1]
+        if mac in assigned:
+            ip,_ = assigned.pop(mac)
             ip_pool.append(ip)
-            conn.send(f"RELEASED {ip}".encode())
-            print(f"[RELEASE] {client_id} returned {ip}")
+            s.sendto(f"RELEASED {mac} {ip}".encode(), addr)
+            print(f"[RELEASE] {mac} -> {ip}")
         else:
-            conn.send("NOT_FOUND".encode())
-
-    conn.close()
-
-    print("\nCURRENT ASSIGNMENTS:\n")
-    if assigned:
-        for cid,(ip,end) in assigned.items():
-            print(f"{cid:15} → {ip} | {int(end-time.time())}s left")
-    else:
-        print("No active leases")
-    print()
+            s.sendto("NOT_FOUND".encode(), addr)
+            print(f"[RELEASE] {mac} not found")
