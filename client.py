@@ -2,7 +2,7 @@ import socket
 import time
 
 server_ip="10.238.46.148"
-port=9999
+port=1010
 client_name=input("Enter client name: ")
 
 try:

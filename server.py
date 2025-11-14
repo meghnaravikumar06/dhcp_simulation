@@ -8,7 +8,7 @@ assigned={}
 past_leases={}
 lease_duration=10
 server_ip="0.0.0.0"
-port=9999
+port=1010
 
 def lease_cleaner():
     while True:
