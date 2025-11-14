@@ -1,40 +1,49 @@
 import socket, time, uuid
 
-server_ip = "127.0.0.1"
 server_port = 6767
 mac = uuid.uuid4().hex[:12]
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 sock.settimeout(5)
+broadcast = ("255.255.255.255", server_port)
 
 assigned_ip = None
-renew_count = 0
-max_renews = 2
-
-def send_release():
-    if assigned_ip:
-        msg = f"RELEASE {mac} {assigned_ip}"
-        sock.sendto(msg.encode(), (server_ip, server_port))
-
 try:
-    msg = f"DISCOVER {mac}"
-    sock.sendto(msg.encode(), (server_ip, server_port))
-    data, _ = sock.recvfrom(1024)
-    offer, offer_ip, lt = data.decode().split()
-    msg = f"REQUEST {mac} {offer_ip}"
-    sock.sendto(msg.encode(), (server_ip, server_port))
-    data, _ = sock.recvfrom(1024)
-    _, assigned_ip, lt = data.decode().split()
+    sock.sendto(f"DISCOVER {mac}".encode(), broadcast)
+    data, server = sock.recvfrom(1024)
+    parts = data.decode().split()
+    if parts[0] != "OFFER":
+        print("No valid OFFER:", data.decode())
+        raise SystemExit
+    assigned_ip = parts[2]
+    lease_time = int(parts[3])
+    print(f"[OFFER] {assigned_ip} lease={lease_time}")
 
-    while renew_count < max_renews:
-        time.sleep(int(lt) // 2)
-        msg = f"RENEW {mac}"
-        sock.sendto(msg.encode(), (server_ip, server_port))
-        data, _ = sock.recvfrom(1024)
-        _, _, lt = data.decode().split()
+    sock.sendto(f"REQUEST {mac} {assigned_ip}".encode(), server)
+    data, server = sock.recvfrom(1024)
+    parts = data.decode().split()
+    print(f"[ACK] {parts}")
+
+    renew_count = 0
+    MAX_RENEWS = 2
+    while renew_count < MAX_RENEWS:
+        time.sleep(lease_time // 2)
+        sock.sendto(f"RENEW {mac}".encode(), server)
+        data, server = sock.recvfrom(1024)
+        parts = data.decode().split()
+        print(f"[RENEW] {parts}")
         renew_count += 1
 
-    time.sleep(int(lt))
+    print("Stopping renewals, waiting for lease expiry")
+    time.sleep(lease_time + 1)
 
 finally:
-    send_release()
+    if assigned_ip:
+        try:
+            sock.sendto(f"RELEASE {mac} {assigned_ip}".encode(), server)
+            data, _ = sock.recvfrom(1024)
+            print("[RELEASE] server replied:", data.decode())
+        except:
+            pass
     sock.close()
+    print("client exiting")
