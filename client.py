@@ -10,19 +10,23 @@ mac = str(uuid.uuid4())[:12]
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 sock.settimeout(3)
+
 broadcast_addr = ("255.255.255.255", server_port)
+
 sock.sendto(f"DISCOVER {mac}".encode(), broadcast_addr)
 data, server = sock.recvfrom(1024)
+
 parts = data.decode().split()
-offer_ip = parts[1]    
-print(f"[OFFER] {offer_ip}")
+offer_ip = parts[2]         # msg = OFFER <mac> <ip> <lease>
+lease_time = int(parts[3])
+print(f"[OFFER] {offer_ip} (lease={lease_time})")
 
 sock.sendto(f"REQUEST {mac} {offer_ip}".encode(), server)
 data, server = sock.recvfrom(1024)
 
 parts = data.decode().split()
-assigned_ip = parts[1]
-lease_time = int(parts[2])
+assigned_ip = parts[2]      # ACK <mac> <ip> <lease>
+lease_time = int(parts[3])
 print(f"[ACK] {assigned_ip} lease={lease_time}")
 
 MAX_RENEWS = 2
@@ -39,8 +43,8 @@ while True:
     data, server = sock.recvfrom(1024)
 
     parts = data.decode().split()
-    assigned_ip = parts[1]
-    lease_time = int(parts[2])
+    assigned_ip = parts[2]
+    lease_time = int(parts[3])
 
     renew_count += 1
     print(f"[RENEW] {assigned_ip} ({renew_count}/{MAX_RENEWS})")

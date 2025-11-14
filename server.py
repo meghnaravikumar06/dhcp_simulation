@@ -3,12 +3,16 @@ import time
 import threading
 import random
 
-ip_pool = ["192.168.1.10","192.168.1.11","192.168.1.12","192.168.1.13","192.168.1.14","192.168.1.15","192.168.1.16","192.168.1.17","192.168.1.18","192.168.1.19","192.168.1.20"]
+ip_pool = [
+    "192.168.1.10","192.168.1.11","192.168.1.12","192.168.1.13","192.168.1.14",
+    "192.168.1.15","192.168.1.16","192.168.1.17","192.168.1.18","192.168.1.19",
+    "192.168.1.20"
+]
 
-assigned = {}      
-past_leases = {}  
+assigned = {}       # mac → (ip, expiry)
+past_leases = {}    # mac → ip
 lease_time = 30
-port = 6767
+port = 9999
 
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -52,7 +56,8 @@ while True:
         mac = parts[1]
         ip = select_ip(mac)
         if ip:
-            s.sendto(f"OFFER {mac} {ip}".encode(), addr)
+            # send: OFFER <mac> <ip> <lease>
+            s.sendto(f"OFFER {mac} {ip} {lease_time}".encode(), addr)
             print(f"[OFFER] {mac} -> {ip} to {addr}")
         else:
             s.sendto("NO_IP".encode(), addr)
@@ -62,12 +67,14 @@ while True:
         mac = parts[1]
         req_ip = parts[2]
         already_assigned = (mac in assigned and assigned[mac][0] == req_ip)
+
         if req_ip in ip_pool or already_assigned:
             assigned[mac] = (req_ip, time.time() + lease_time)
             past_leases[mac] = req_ip
             if req_ip in ip_pool:
                 ip_pool.remove(req_ip)
-            s.sendto(f"ACK {mac} {req_ip}".encode(), addr)
+            # send: ACK <mac> <ip> <lease>
+            s.sendto(f"ACK {mac} {req_ip} {lease_time}".encode(), addr)
             print(f"[ACK] {mac} -> {req_ip}")
         else:
             s.sendto("NACK".encode(), addr)
@@ -76,9 +83,9 @@ while True:
     elif parts[0] == "RENEW" and len(parts) == 2:
         mac = parts[1]
         if mac in assigned:
-            ip, _ = assigned[mac]
+            ip,_ = assigned[mac]
             assigned[mac] = (ip, time.time() + lease_time)
-            s.sendto(f"ACK_RENEW {mac} {ip}".encode(), addr)
+            s.sendto(f"ACK_RENEW {mac} {ip} {lease_time}".encode(), addr)
             print(f"[RENEW-ACK] {mac} -> {ip}")
         else:
             s.sendto("NACK".encode(), addr)
