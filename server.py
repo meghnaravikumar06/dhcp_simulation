@@ -11,7 +11,7 @@ ip_pool = [
 
 assigned = {}       # mac → (ip, expiry)
 past_leases = {}    # mac → ip
-lease_time = 30
+lease_time = 15
 port = 9999
 
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
