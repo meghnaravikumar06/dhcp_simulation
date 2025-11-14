@@ -22,7 +22,7 @@ if msg.startswith("OFFER"):
         print(f"[REQUEST] ACK received. IP assigned: {offered_ip}")
         print("Client now using this IP...\n")
         print(f"Using IP for 15 seconds...")
-        time.sleep(15)
+        time.sleep(5)
         s = socket.socket()
         s.connect((server_ip, port))
         rel = f"RELEASE {client_name}"
