@@ -2,7 +2,7 @@ import socket
 import time
 import uuid
 
-server_port = 9999
+server_port = 6767
 lease_time = 0
 assigned_ip = None
 mac = str(uuid.uuid4())[:12]
