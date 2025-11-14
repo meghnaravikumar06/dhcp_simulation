@@ -1,55 +1,40 @@
-import socket
-import time
-import uuid
+import socket, time, uuid
 
-server_port = 9999
-lease_time = 0
-assigned_ip = None
-mac = str(uuid.uuid4())[:12]
-
+server_ip = "127.0.0.1"
+server_port = 6767
+mac = uuid.uuid4().hex[:12]
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-sock.settimeout(3)
+sock.settimeout(5)
 
-broadcast_addr = ("255.255.255.255", server_port)
-
-sock.sendto(f"DISCOVER {mac}".encode(), broadcast_addr)
-data, server = sock.recvfrom(1024)
-
-parts = data.decode().split()
-offer_ip = parts[2]         # msg = OFFER <mac> <ip> <lease>
-lease_time = int(parts[3])
-print(f"[OFFER] {offer_ip} (lease={lease_time})")
-
-sock.sendto(f"REQUEST {mac} {offer_ip}".encode(), server)
-data, server = sock.recvfrom(1024)
-
-parts = data.decode().split()
-assigned_ip = parts[2]      # ACK <mac> <ip> <lease>
-lease_time = int(parts[3])
-print(f"[ACK] {assigned_ip} lease={lease_time}")
-
-MAX_RENEWS = 2
+assigned_ip = None
 renew_count = 0
+max_renews = 2
 
-while True:
-    time.sleep(lease_time // 2)
+def send_release():
+    if assigned_ip:
+        msg = f"RELEASE {mac} {assigned_ip}"
+        sock.sendto(msg.encode(), (server_ip, server_port))
 
-    if renew_count >= MAX_RENEWS:
-        print("Renew limit reached. Allowing lease to expire.")
-        break
+try:
+    msg = f"DISCOVER {mac}"
+    sock.sendto(msg.encode(), (server_ip, server_port))
+    data, _ = sock.recvfrom(1024)
+    offer, offer_ip, lt = data.decode().split()
+    msg = f"REQUEST {mac} {offer_ip}"
+    sock.sendto(msg.encode(), (server_ip, server_port))
+    data, _ = sock.recvfrom(1024)
+    _, assigned_ip, lt = data.decode().split()
 
-    sock.sendto(f"RENEW {mac}".encode(), server)
-    data, server = sock.recvfrom(1024)
+    while renew_count < max_renews:
+        time.sleep(int(lt) // 2)
+        msg = f"RENEW {mac}"
+        sock.sendto(msg.encode(), (server_ip, server_port))
+        data, _ = sock.recvfrom(1024)
+        _, _, lt = data.decode().split()
+        renew_count += 1
 
-    parts = data.decode().split()
-    assigned_ip = parts[2]
-    lease_time = int(parts[3])
+    time.sleep(int(lt))
 
-    renew_count += 1
-    print(f"[RENEW] {assigned_ip} ({renew_count}/{MAX_RENEWS})")
-
-print("Client stopping renewals. Waiting for server to expire lease.")
-
-while True:
-    time.sleep(1)
+finally:
+    send_release()
+    sock.close()

@@ -1,103 +1,59 @@
-import socket
-import time
-import threading
-import random
+import socket, threading, time
 
-ip_pool = [
-    "192.168.1.10","192.168.1.11","192.168.1.12","192.168.1.13","192.168.1.14",
-    "192.168.1.15","192.168.1.16","192.168.1.17","192.168.1.18","192.168.1.19",
-    "192.168.1.20"
-]
-
-assigned = {}       # mac → (ip, expiry)
-past_leases = {}    # mac → ip
+server_ip = "0.0.0.0"
+server_port = 6767
+pool = [f"192.168.1.{i}" for i in range(10, 251)]
+leases = {}
 lease_time = 15
-port = 9999
 
-s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-s.bind(("", port))
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.bind((server_ip, server_port))
 
 def cleaner():
     while True:
         now = time.time()
-        expired = [m for m,(ip,e) in assigned.items() if e <= now]
-        for m in expired:
-            ip,_ = assigned.pop(m)
-            ip_pool.append(ip)
-            print(f"[LEASE EXPIRED] {m} -> {ip}")
+        expired = [mac for mac, d in leases.items() if now > d["expiry"]]
+        for mac in expired:
+            del leases[mac]
         time.sleep(1)
 
 threading.Thread(target=cleaner, daemon=True).start()
 
-def select_ip(mac):
-    if mac in past_leases:
-        old = past_leases[mac]
-        if old in ip_pool:
-            return old
-    if ip_pool:
-        return random.choice(ip_pool)
-    return None
-
-print("SERVER RUNNING ON UDP PORT", port)
-
 while True:
-    try:
-        data, addr = s.recvfrom(1024)
-        msg = data.decode().strip()
-    except:
-        continue
+    data, addr = sock.recvfrom(1024)
+    msg = data.decode()
 
-    parts = msg.split()
-    if not parts:
-        continue
-
-    if parts[0] == "DISCOVER" and len(parts) == 2:
-        mac = parts[1]
-        ip = select_ip(mac)
-        if ip:
-            # send: OFFER <mac> <ip> <lease>
-            s.sendto(f"OFFER {mac} {ip} {lease_time}".encode(), addr)
-            print(f"[OFFER] {mac} -> {ip} to {addr}")
+    if msg.startswith("DISCOVER"):
+        _, mac = msg.split()
+        if mac in leases:
+            ip = leases[mac]["ip"]
         else:
-            s.sendto("NO_IP".encode(), addr)
-            print("[OFFER] none available")
+            ip = None
+            for candidate in pool:
+                if candidate not in [v["ip"] for v in leases.values()]:
+                    ip = candidate
+                    break
+            if ip is None:
+                continue
+        offer = f"OFFER {ip} {lease_time}"
+        sock.sendto(offer.encode(), addr)
 
-    elif parts[0] == "REQUEST" and len(parts) == 3:
-        mac = parts[1]
-        req_ip = parts[2]
-        already_assigned = (mac in assigned and assigned[mac][0] == req_ip)
+    elif msg.startswith("REQUEST"):
+        _, mac, req_ip = msg.split()
+        leases[mac] = {"ip": req_ip, "expiry": time.time() + lease_time}
+        ack = f"ACK {req_ip} {lease_time}"
+        sock.sendto(ack.encode(), addr)
 
-        if req_ip in ip_pool or already_assigned:
-            assigned[mac] = (req_ip, time.time() + lease_time)
-            past_leases[mac] = req_ip
-            if req_ip in ip_pool:
-                ip_pool.remove(req_ip)
-            # send: ACK <mac> <ip> <lease>
-            s.sendto(f"ACK {mac} {req_ip} {lease_time}".encode(), addr)
-            print(f"[ACK] {mac} -> {req_ip}")
-        else:
-            s.sendto("NACK".encode(), addr)
-            print(f"[NACK] {mac} requested {req_ip}")
+    elif msg.startswith("RENEW"):
+        _, mac = msg.split()
+        if mac in leases:
+            leases[mac]["expiry"] = time.time() + lease_time
+            ip = leases[mac]["ip"]
+            rn = f"RENEWED {ip} {lease_time}"
+            sock.sendto(rn.encode(), addr)
 
-    elif parts[0] == "RENEW" and len(parts) == 2:
-        mac = parts[1]
-        if mac in assigned:
-            ip,_ = assigned[mac]
-            assigned[mac] = (ip, time.time() + lease_time)
-            s.sendto(f"ACK_RENEW {mac} {ip} {lease_time}".encode(), addr)
-            print(f"[RENEW-ACK] {mac} -> {ip}")
-        else:
-            s.sendto("NACK".encode(), addr)
-            print(f"[RENEW-NACK] {mac} not found")
-
-    elif parts[0] == "RELEASE" and len(parts) == 2:
-        mac = parts[1]
-        if mac in assigned:
-            ip,_ = assigned.pop(mac)
-            ip_pool.append(ip)
-            s.sendto(f"RELEASED {mac} {ip}".encode(), addr)
-            print(f"[RELEASE] {mac} -> {ip}")
-        else:
-            s.sendto("NOT_FOUND".encode(), addr)
-            print(f"[RELEASE] {mac} not found")
+    elif msg.startswith("RELEASE"):
+        _, mac, ip = msg.split()
+        if mac in leases:
+            del leases[mac]
+        sock.sendto("RELEASED".encode(), addr)
